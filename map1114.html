@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Simple Map</title>
+    <meta name="viewport" content="initial-scale=1.0">
+    <meta charset="utf-8">
+    <script src="./lib/d3.js" charset="utf-8"></script>
+    <script src="./populartimes_starbucks.json" charset="utf-8"></script>
+    <script src="./populartimes_doutor.json" charset="utf-8"></script>
+    <style>
+      html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      #map {
+        position:absolute;
+        top : 0px;
+        height: 100%;
+        width: 50%;
+      }
+      div.ScrollBox {
+        position:absolute;
+        overflow:auto;width:20%;height:150px;border:1px black solid;margin:0px;}
+
+      #slideexp{
+        position:absolute;
+        top: -15px;
+        left:70%;
+      }
+      #slider{
+        position:absolute;
+        top:20px;
+        left:70%;
+      }
+      #SortList{
+        position:absolute;
+        left:50%;
+      }
+      .js-slider{
+        position:relative;
+        width:200px;
+        height:20px;
+      }
+      .js-slider div{
+        background:#ddd;
+        height:3px;
+        border:1px inset #aaa;
+        position:relative;
+        top:12px;
+        font-size:0px;
+      }
+      .js-slider input{
+        position:absolute;
+        width:15px;
+        height:20px;
+        display:block;
+        left:60px;/*初期値300mを想定*/
+      }
+
+      .m{
+        position: absolute;
+        left:150px;
+      }
+	  #PopularTimeGraph{
+        position:absolute;
+        top:160px;
+        left:50%;
+      }
+
+      #timechange, #selectshop{
+        position:absolute;
+        left:50%;
+      }
+    </style>
+  </head>
+  <body>
+    <ul id = "SortList">
+    </ul>
+    <div id="map"></div>
+    <form name="form1" id="selectshop" action="">
+
+    <input id="Checkbox1" type="checkbox" /><label for="Checkbox1">スターバックス←<span style="background-color:#016632;">　　</span></label></input><br />
+    <input id="Checkbox2" type="checkbox" /><label for="Checkbox2">ドトール←<span style="background-color:#6a5f37">　　</span></label></input><br />
+
+</form>
+    <input id = "Sort" onclick="Sort();" type=button value="Sort"></input>
+
+    <br />
+    <p id = "slideexp">検索距離を選択</p><br />
+    <form id = "slider" class="js-slider-form" onsubmit="return false;">
+      <input type="text" name="slider" id="slider1o" class="slider1o" value="300"><label class="m" for="slider1o">m</label>
+      <div id="slider1" class="js-slider">
+        <div></div>
+        <input type="button" value="" onclick="Slide()">
+      </div>
+    </form>
+
+    <form id = "timechange">
+      <p>時刻を選択<br>
+        <input type="radio" name="time" id="time1" checked>現在<br>
+        <input type="radio" name="time" id="time2">1時間後<br>
+        <input type="radio" name="time" id="time3">2時間後<br>
+        <input type="button" name="Search" value="再検索" onclick="SearchAgain()"><br>
+      </p>
+    </form>
+
+    <p id = "output"></p>
+
+	  <!--訪問者の多い時間帯データをここに表示する-->
+    <!--ここから-->
+    <div id="PopularTimeGraph"></div>
+    <!--ここまで-->
+    <script>
+
+    var map = null;
+    var cityCircle = null;
+    var infowin = null;
+    var infowin_open = false;
+    var markers = [];
+    var shopnames = [];
+    var ratings = [];
+    var distances = [];
+    var d = 300;
+
+    //☆の描画テンプレート→色を可変にするにはcallback関数内に移動すべきか
+    var goldStar = {
+       path: 'M 10,0.4 12.4,7.2 19.6,7.2 14,11.6 16,18.4 10,14.4 4,18.4 6,11.6 0.4,7.2 7.6,7.2 z',
+       fillColor: 'yellow',
+       fillOpacity: 0.8,
+       scale: 1,
+       strokeColor: 'gold',
+       strokeWeight: 2
+     };
+    var blackStar = {
+     path: 'M 10,0.4 12.4,7.2 19.6,7.2 14,11.6 16,18.4 10,14.4 4,18.4 6,11.6 0.4,7.2 7.6,7.2 z',
+     fillColor: 'black',
+     fillOpacity: 0.8,
+     scale: 1,
+     strokeColor: 'black',
+     strokeWeight: 2
+    };
+    var CrossMark = {
+       path: 'M 5,5 5,15 5,10 10,10 5,10 0,10 z',
+       fillColor: 'yellow',
+       fillOpacity: 0.8,
+       scale: 1,
+       strokeColor: 'gold',
+       strokeWeight: 2
+     };
+
+    //検索店ごとに外枠の色を変えるのに使用
+    var shop_on_search = null;
+
+    //訪問者の多い時間帯データのグラフを1度目に描いてからはずっとtrueになる
+    //infowindow内に上手く描けるようになったら不要になるかも
+    var created_graph_area = false;
+
+    var popularvaluemax = 80;//80(px)くらいが訪問者の多い時間帯データの最大値のようなのでここで定義
+
+    //現在の色設定　：　混雑→赤、すいている→薄い黄色
+    var color = d3.scaleQuantize()
+              .domain([0, 1.0])
+              .range(["#2b83ba", "#abdda4", "#edd60e", "#fdae61", "#d7191c", "#a50f15"]);
+
+    //店のチェーン系列に応じた色(スタバ濃ver->"00521e" 薄ver->"1f8450")
+    var shop_color = {"starbucks": "#016632",
+                      "doutor": "#6a5f37"}
+
+    //now = new Date();で取得した現在情報のうち.getDay()で得られる曜日のインデックスを対応する文字列に変換する用(表示しないならいらない)
+    var weeks = new Array("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday");
+
+    var PopularTimeHash = {};
+
+PopularTimeDataStarbucks.Data.forEach(function(d){
+  PopularTimeHash[d.placeId] = [d.Sunday,d.Monday,d.Tuesday,d.Wednesday,d.Thursday,d.Friday,d.Saturday];
+});
+PopularTimeDataDoutor.Data.forEach(function(d){
+  PopularTimeHash[d.placeId] = [d.Sunday,d.Monday,d.Tuesday,d.Wednesday,d.Thursday,d.Friday,d.Saturday];
+});
+
+    function Slide(){
+      var slider = document.getElementById('slider1');
+      var output = document.getElementById('slider1o');
+
+      var input = slider.getElementsByTagName('input')[0];
+      var root = document.documentElement;
+      var dragging = false;
+      var value = output.value;// 初期位置
+      var width = input.clientWidth / 2;
+
+      var set_value = function (){
+        // つまみのサイズ(input.clientWidth)だけ位置を調整
+        input.style.left = (value - input.clientWidth/2) + 'px';
+        output.value = value*10/2;
+        d = Number(output.value);
+      };
+
+      //ページ読み込み時の初期化?
+      set_value();
+
+      // 目盛り部分をクリックしたとき
+      slider.onclick = function(evt){
+        dragging = true;
+        document.onmousemove(evt);
+        document.onmouseup();
+      };
+      // ドラッグ開始
+      input.onmousedown = function(evt){
+        dragging = true;
+        return false;
+      };
+      // ドラッグ終了
+      document.onmouseup = function(evt){
+        if (dragging) {
+          dragging = false;
+          output.value = value*10/2;
+          d = Number(output.value);
+        }
+        SearchAgain();
+      };
+      document.onmousemove = function(evt){
+        if(dragging){
+          // ドラッグ途中
+          if(!evt){
+            evt = window.event;
+          }
+          var left = evt.clientX;
+          var rect = slider.getBoundingClientRect();
+          // マウス座標とスライダーの位置関係で値を決める
+          value = Math.round(left - rect.left - width);
+          // スライダーからはみ出したとき
+          if (value < 0) {
+            value = 0;
+          } else if (value > slider.clientWidth) {
+            value = slider.clientWidth;
+          }
+          set_value();
+          ReDrawCircle();
+          return false;
+        }
+      };
+    }
+
+    function initMap() {
+
+      map = new google.maps.Map(document.getElementById('map'), {
+        center: {lat: 35.7121454, lng: 139.7626623},
+        zoom: 16,
+      });
+      cityCircle = new google.maps.Circle({
+       strokeColor: "blue",
+       strokeOpacity: 0.8,
+       strokeWeight: 2,
+       fillColor: "blue",
+       fillOpacity: 0.1,
+       map: map,
+       center: map.getCenter(),
+       radius: d
+     });
+     SearchAgain();
+     draw_graph(null,1);//ページ読み込み時に描画するグラフ
+
+  map.addListener('dragstart',function(){
+    var dummy = 0;
+    //マーカの消去などの処理があったが、SearchAgain()関数に統合された
+  });
+  map.addListener('center_changed', function() {
+    ReDrawCircle();
+  });
+  map.addListener('dragend',function(){
+    // ドラッグ終了時に再検索をかける
+     SearchAgain();
+  });
+
+     map.addListener('mousemove',function(){
+         for(var i=0;i<markers.length;i++){
+           /*
+           console.log(i);
+           console.log(ratings);
+           console.log(markers);
+           console.log(shopnames);
+           */
+           markerInfo(markers[i], shopnames[i],ratings[i]);
+         }
+
+        function markerInfo(marker, name, rating) {
+          if(rating == 0)rating = "unknown";
+          google.maps.event.addListener(marker, 'mouseover', function (event) {
+            if(infowin_open == false){
+              var contentString = "name: " + name + '<br />' + "rating: " + rating;
+              infowin = new google.maps.InfoWindow({
+                  content: contentString
+              });
+
+              /*var directionsService = new google.maps.DirectionsService;
+              var directionsDisplay = new google.maps.DirectionsRenderer;
+              directionsDisplay.setMap(map);
+              directionsService.route({
+               origin: map.getCenter(),
+               destination: marker.place.location,
+               travelMode: google.maps.TravelMode.WALKING,
+               optimizeWaypoints: false,
+             }, function(response, status) {
+               if (status === google.maps.DirectionsStatus.OK) {
+                 directionsDisplay.setDirections(response);
+               } else {
+                 window.alert('Directions request failed due to ' + status);
+               }
+             });*/
+
+              infowin.open(marker.getMap(), marker);
+
+              draw_graph(marker,0);
+
+              console.log([marker.name, marker.place.placeId]);
+              /*
+              console.log(PopularTimeHash[marker.place.placeId]);
+              console.log(PopularTimeHash[marker.place.placeId][now.getDay()]);
+              */
+
+              infowin_open = true;
+            }
+          });
+          google.maps.event.addListener(marker,'mouseout',function(event){
+            infowin.close();
+            infowin_open = false;
+          });
+        }
+      });
+}
+
+function ReDrawCircle() {
+
+  cityCircle.setMap(null);
+    cityCircle = new google.maps.Circle({
+       strokeColor: "blue",
+       strokeOpacity: 0.8,
+       strokeWeight: 2,
+       fillColor: "blue",
+       fillOpacity: 0.1,
+       map: map,
+       center: map.getCenter(),
+       radius: d
+     });
+
+     var center = new google.maps.Marker({
+     map: map,
+     icon: CrossMark,
+     place: map.getCenter()
+     });
+     //console.log(shopnames);
+}
+
+function SearchAgain(){
+  //マーカーなどの検索結果をクリア
+  for(var i=0;i<markers.length;i++){
+      markers[i].setMap(null);
+    }
+    markers = [];
+    shopnames = [];
+    ratings = [];
+    distances = [];
+
+  //チェックボックスの状態に応じた検索をかける
+  if(Checkbox1.checked){
+       var request = {
+         location: map.getCenter(),
+         radius: d,
+         keyword: 'スターバックス'
+       };
+       var service = new google.maps.places.PlacesService(map);
+       shop_on_search = "starbucks";
+       service.nearbySearch(request, callback);
+     }
+     if(Checkbox2.checked){
+       var request = {
+         location: map.getCenter(),
+         radius: d,
+         keyword: 'ドトール'
+       };
+       var service = new google.maps.places.PlacesService(map);
+       shop_on_search = "doutor";
+       service.nearbySearch(request, callback);
+     }
+
+     //検索距離の入力欄を更新
+     var output = document.getElementById('slider1o');
+     output.value = d;
+
+     ReDrawCircle();
+  }
+
+  function callback(results, status) {
+     if (status == google.maps.places.PlacesServiceStatus.OK) {
+      var br = false; //to prevent putting the same object in markers
+       for(var i=0;i<results.length;i++){
+         var outercolor = shop_color[shop_on_search];//店名に応じた☆の外枠色を指定
+                                                     //現在両方にチェックを入れた場合、処理が同時となってドトールの色になってしまうので色の適用は外している
+         var now = new Date();
+         var Star;
+         var timeidx = -6 + now.getHours();
+         if(time2.checked) timeidx += 1;
+         if(time3.checked) timeidx += 2;
+         if(PopularTimeHash[results[i].place_id] != undefined){
+         var noudo = Math.round(PopularTimeHash[results[i].place_id][now.getDay()][timeidx]);
+         
+         Star = {
+           path: 'M 10,0.4 12.4,7.2 19.6,7.2 14,11.6 16,18.4 10,14.4 4,18.4 6,11.6 0.4,7.2 7.6,7.2 z',
+           fillColor: color(noudo/popularvaluemax),
+           fillOpacity: 0.8,
+           scale: 1,
+           strokeColor: color(noudo/popularvaluemax),
+           strokeWeight: 2
+         };
+       }
+       else{
+         Star = {
+           path: 'M 10,0.4 12.4,7.2 19.6,7.2 14,11.6 16,18.4 10,14.4 4,18.4 6,11.6 0.4,7.2 7.6,7.2 z',
+           fillColor: 'grey',
+           fillOpacity: 0.8,
+           scale: 1,
+           strokeColor: 'grey',
+           strokeWeight: 2
+         };
+       }
+         for(var j=0;j<markers.length;j++){
+           if(results[i].place_id == markers[j].place.placeId){
+             br = true;
+           }
+         }
+         var marker = new google.maps.Marker({
+         map: map,
+         icon: Star,
+         name: results[i].name,
+         place: {
+           placeId: results[i].place_id,
+           location: results[i].geometry.location
+           }
+         });
+
+       //ここで距離を計算している　ただし、検索数に上限あり
+       /*var directionsService = new google.maps.DirectionsService;
+       var directionsDisplay = new google.maps.DirectionsRenderer;
+       var route;
+       directionsService.route({
+        origin: map.getCenter(),
+        destination: marker.place.location,
+        travelMode: google.maps.TravelMode.WALKING
+      }, function(response, status) {
+        if (status === google.maps.DirectionsStatus.OK) {
+          directionsDisplay.setDirections(response);
+          route = response.routes[0];
+          distances.push(route.legs[0].distance.text);
+        } else {
+          window.alert('Directions request failed due to ' + status);
+        }
+      });*/
+
+       if(br == true) break;
+       markers.push(marker);
+       shopnames.push(results[i].name);
+       if(results[i].rating == undefined) ratings.push(0);
+       else ratings.push(results[i].rating);
+         }
+       }
+     }
+
+function draw_graph(marker,option){
+  if(option==0){
+  var outoforder = false;
+  var now = new Date();
+  var timeidx = -6 + now.getHours();
+              //var timeidx = 8; //テスト用(現在時刻をエミュレートする(現在時刻を示す縦棒には無影響))
+              if(time2.checked) timeidx += 1;
+              if(time3.checked) timeidx += 2;
+              if (timeidx < 0) {
+                timeidx = 0;
+                outoforder = true;
+                }//AM1,2,3,4,5時はAM6時とみなす
+              if (timeidx>16) {
+                outoforder = true;
+              }
+
+              if (created_graph_area == false){
+                //グラフ描画スペースが確保済みでなかったら確保する(一度のみ)
+                var svg = d3.select("#PopularTimeGraph")
+                            .append("svg")
+                            .attr("width", 400)
+                            .attr("height", 200);
+                created_graph_area = true;
+              } else {
+                var svg = d3.select("#PopularTimeGraph");
+
+                //描画済みの内容をすべてリセットする
+                svg.selectAll("*").remove();
+                svg = d3.select("#PopularTimeGraph")
+                        .append("svg")
+                        .attr("width", 400)
+                        .attr("height", 200);
+              }
+              
+              var linefunc = d3.line()
+                .x(function(d) {return d[0];})
+                .y(function(d) {return d[1];});
+
+              var areaframearray = [[[0,0],[400,0]],
+                                    [[400,0],[400,200]],
+                                    [[400,200],[0,200]],
+                                    [[0,200],[0,0]]];
+
+              for(var idx=0; idx<areaframearray.length; idx++){
+                svg.append("path")
+                   .data([areaframearray[idx]])
+                   .attr("class", "line")
+                   .attr("d", linefunc)
+                   .attr("stroke", "lightgrey")
+                   .attr("stroke-width", 1);
+              }
+
+              if(outoforder == false){
+              //指定された時間帯の位置を黒く囲む
+              var thisbar = svg.selectAll("thisrect")
+                               .data([PopularTimeHash[marker.place.placeId][now.getDay()][timeidx]])
+                               .enter()
+                               .append("rect");
+
+              thisbar.attr("x", (timeidx+1)*20 - 2)
+                     .attr("width", 20)
+                     .attr("y", function(d){
+                       return 100 - d - 2;
+                     })
+                     .attr("height", function(d){
+                       return d + 2;
+                     })
+                     .attr("fill", function(d){
+                       return "black";// d3.rgb(color(d/popularvaluemax)).darker(0.8)
+                     });
+              }
+
+              var bars = svg.selectAll("rect")
+                            .data(PopularTimeHash[marker.place.placeId][now.getDay()])
+                            .enter()
+                            .append("rect");
+
+              bars.attr("x", function(d,i){
+                    return (i+1) * 20;
+                  })
+                  .attr("width", 16)
+                  .attr("y", function(d,i){
+                    return 100-d;
+                  })
+                  .attr("height", function(d){
+                    return d;
+                  })
+                  .attr("fill",function(d){
+                    return color(d/popularvaluemax);
+                  });
+
+              // 現在時間に相当する位置に縦線を引く
+              var hour_now = now.getHours();
+              var minute_now = (hour_now>=6)?now.getMinutes():0;
+              var px = 20 + 20*((hour_now>=6)?(hour_now-6):0) -2 + Math.floor(20 * minute_now / 60);
+              var pnow_up = [px, 0]; // 現在時間を表す線分の上端
+              var pnow_bot = [px, 105]; // 現在時間を表す線分の下端
+              var pnowarray = [pnow_up, pnow_bot];
+
+              svg.append("path")
+                 .data([pnowarray])
+                 .attr("class", "line")
+                 .attr("d", linefunc)
+                 .attr("stroke", "grey")
+                 .attr("stroke-width", 2);
+
+              //現在時刻線の説明に"now"というテキストを付与
+              var now_text = svg.selectAll("nowtext").data([["←NOW"]])
+                  .enter().append("text");
+
+              now_text.attr("x", px+2)
+                       .attr("y", 15)
+                       .attr("text-anchor", "start")
+                       .attr("stroke", "none")
+                       .attr("fill", "grey")
+                       .text(function(d){ return d;});
+
+              // ピークの高さを表す横線を描画
+              var ppeak_left = [10,20];//ピークを表す線分の左端
+              var ppeak_right = [390,20];//ピークを表す線分の右端
+              var ppeakarray = [ppeak_left, ppeak_right];
+
+              svg.append("path")
+                 .data([ppeakarray])
+                 .attr("class", "line")
+                 .attr("d", linefunc)
+                 .attr("stroke", "lightgrey")
+                 .attr("stroke-width", 2);
+
+              //時刻を示すめもり線
+              var ptimearray = [[[18,106],[358,106]],
+                                [[18,100],[18,106]],
+                                [[38,103],[38,106]],
+                                [[58,103],[58,106]],
+                                [[78,100],[78,106]],
+                                [[98,103],[98,106]],
+                                [[118,103],[118,106]],
+                                [[138,100],[138,106]],
+                                [[158,103],[158,106]],
+                                [[178,103],[178,106]],
+                                [[198,100],[198,106]],
+                                [[218,103],[218,106]],
+                                [[238,103],[238,106]],
+                                [[258,100],[258,106]],
+                                [[278,103],[278,106]],
+                                [[298,103],[298,106]],
+                                [[318,100],[318,106]],
+                                [[338,103],[338,106]],
+                                [[358,103],[358,106]]];
+
+              for(var idx=0; idx<ptimearray.length; idx++){
+                svg.append("path")
+                   .data([ptimearray[idx]])
+                   .attr("class", "line")
+                   .attr("d", linefunc)
+                   .attr("stroke", "lightgrey")
+                   .attr("stroke-width", 1);
+              }
+
+              //時刻を示すテキストを3時間おきの位置に描画
+              var time_text = [6, 9, 12, 15 ,18, 21];
+
+              var text = svg.selectAll("text").data(time_text)
+                      .enter().append("text");
+
+              text.attr("x", function(d, i){ return 20 + 20*3*i; })
+                  .attr("y", 120)
+                  .attr("text-anchor", "middle")
+                  .attr("stroke", "none")
+                  .attr("fill", "grey")
+                  .text(function(d){ return d;});
+
+              //ピーク線の説明に"peak"というテキストを付与
+              var peak_text = svg.selectAll("peaktext").data([["peak"]])
+                  .enter().append("text");
+
+              peak_text.attr("x", 365)
+                       .attr("y", 30)
+                       .attr("text-anchor", "start")
+                       .attr("stroke", "none")
+                       .attr("fill", "grey")
+                       .text(function(d){ return d;});
+              
+              //凡例
+              var ledgend_color = [["#2b83ba"], ["#abdda4"], ["#edd60e"], ["#fdae61"], ["#d7191c"], ["#a50f15"]];
+
+              var ledgend = svg.selectAll("ledgend").data(ledgend_color)
+                               .enter().append("rect");
+
+              ledgend.attr("x",function(d,i){return 50+40*i;})
+                     .attr("y",170)
+                     .attr("width",40)
+                     .attr("height",10)
+                     .attr("fill", function(d){return d[0];});
+
+              //説明に"混み"というテキストを付与
+              var komi_text = svg.selectAll("komitext").data([["混み"]])
+                  .enter().append("text");
+
+              komi_text.attr("x", 310)
+                       .attr("y", 183)
+                       .attr("text-anchor", "middle")
+                       .attr("stroke", "none")
+                       .attr("fill", "black")
+                       .text(function(d){ return d;});
+
+              //説明に"空き"というテキストを付与
+              var suki_text = svg.selectAll("sukitext").data([["空き"]])
+                  .enter().append("text");
+
+              suki_text.attr("x", 30)
+                       .attr("y", 183)
+                       .attr("text-anchor", "middle")
+                       .attr("stroke", "none")
+                       .attr("fill", "black")
+                       .text(function(d){ return d;});
+
+              //店名テキストを付与
+              var shop_text = svg.selectAll("shoptext").data([[marker.name]])
+                  .enter().append("text");
+
+              shop_text.attr("x", 30)
+                       .attr("y", 135)
+                       .attr("text-anchor", "start")
+                       .attr("stroke", "none")
+                       .attr("fill", "black")
+                       .text(function(d){ return d;});
+
+              if(outoforder==true || PopularTimeHash[marker.place.placeId][now.getDay()][timeidx] == 0){
+                //説明に"指定の時間帯は営業時間外です"というテキストを付与
+                var outoforder_text = svg.selectAll("outofordertext").data([["指定の時間は営業時間外のようです"]])
+                    .enter().append("text");
+
+                outoforder_text.attr("x", 20)
+                               .attr("y", 163)
+                               .attr("text-anchor", "start")
+                               .attr("stroke", "none")
+                               .attr("fill", "darkgrey")
+                               .text(function(d){ return d;});
+              }
+  }//ここまでoption==0(通常時の動作)
+  else if(option==1){//ページ読み込み時を想定
+    if (created_graph_area == false){
+                //グラフ描画スペースが確保済みでなかったら確保する(一度のみ)
+                var svg = d3.select("#PopularTimeGraph")
+                            .append("svg")
+                            .attr("width", 400)
+                            .attr("height", 200);
+                created_graph_area = true;
+              } else {
+                var svg = d3.select("#PopularTimeGraph");
+
+                //描画済みの内容をすべてリセットする
+                svg.selectAll("*").remove();
+                svg = d3.select("#PopularTimeGraph")
+                        .append("svg")
+                        .attr("width", 400)
+                        .attr("height", 200);
+              }
+
+              var linefunc = d3.line()
+                .x(function(d) {return d[0];})
+                .y(function(d) {return d[1];});
+
+      var areaframearray = [[[0,0],[400,0]],
+                            [[400,0],[400,200]],
+                            [[400,200],[0,200]],
+                            [[0,200],[0,0]]];
+
+              for(var idx=0; idx<areaframearray.length; idx++){
+                svg.append("path")
+                   .data([areaframearray[idx]])
+                   .attr("class", "line")
+                   .attr("d", linefunc)
+                   .attr("stroke", "lightgrey")
+                   .attr("stroke-width", 1);
+              }
+
+      //説明テキストを付与
+                var outoforder_text = svg.selectAll("outofordertext").data([["データがあれば表示されます"]])
+                    .enter().append("text");
+
+                outoforder_text.attr("x", 90)
+                               .attr("y", 90)
+                               .attr("text-anchor", "start")
+                               .attr("stroke", "none")
+                               .attr("fill", "darkgrey")
+                               .text(function(d){ return d;});
+  }//ここまでoption==1
+
+}
+
+function Sort(){
+  var i=0;
+  var list = document.getElementById('SortList');
+  while(i<markers.length){
+    var newAnchor = document.createElement("a");
+    var newTxt = document.createTextNode(shopnames[ratings.indexOf(Math.max.apply(null,ratings))] +' '+ ratings[[ratings.indexOf(Math.max.apply(null,ratings))]]);
+    newAnchor.appendChild(newTxt);
+    var newLi = document.createElement("li");
+    newLi.appendChild ( newAnchor );
+    list.appendChild(newLi);
+    ratings[ratings.indexOf(Math.max.apply(null,ratings))] = -10;
+    i++;
+  }
+}
+
+/*
+popular time data template
+    {"placeId":"",
+     "Name":"",
+     "Monday":[,,,,,,,,,,,,,,,,,],
+     "Tuesday":[,,,,,,,,,,,,,,,,,],
+     "Wednesday":[,,,,,,,,,,,,,,,,,],
+     "Thursday":[,,,,,,,,,,,,,,,,,],
+     "Friday":[,,,,,,,,,,,,,,,,,],
+     "Saturday":[,,,,,,,,,,,,,,,,,],
+     "Sunday":[,,,,,,,,,,,,,,,,,]}
+*/
+
+
+    </script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAZPBDKWXSqzY8zwriKg9jlXNtVMOMHwXY&signed_in=true&libraries=places&callback=initMap"
+        async defer></script>
+
+  </body>
+</html>
